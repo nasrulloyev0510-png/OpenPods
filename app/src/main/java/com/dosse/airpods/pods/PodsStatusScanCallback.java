@@ -8,7 +8,7 @@ import android.os.SystemClock;
 import com.dosse.airpods.utils.Logger;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -28,6 +28,7 @@ public abstract class PodsStatusScanCallback extends ScanCallback {
 
     private static final int AIRPODS_MANUFACTURER = 76;
     private static final int AIRPODS_DATA_LENGTH = 27;
+    private static final int SHORT_AIRPODS_DATA_LENGTH = 17;
     private static final int MIN_RSSI = -60;
 
     private final List<ScanResult> mRecentBeacons = new ArrayList<>();
@@ -35,19 +36,14 @@ public abstract class PodsStatusScanCallback extends ScanCallback {
     public abstract void onStatus(PodsStatus status);
 
     public static List<ScanFilter> getScanFilters() {
-        byte[] manufacturerData = new byte[AIRPODS_DATA_LENGTH];
-        byte[] manufacturerDataMask = new byte[AIRPODS_DATA_LENGTH];
+        byte[] longData = new byte[] {7, 25};
+        byte[] longMask = new byte[] {-1, -1};
+        byte[] shortData = new byte[] {7, 15, 0};
+        byte[] shortMask = new byte[] {-1, -1, -1};
 
-        manufacturerData[0] = 7;
-        manufacturerData[1] = 25;
-
-        manufacturerDataMask[0] = -1;
-        manufacturerDataMask[1] = -1;
-
-        ScanFilter.Builder builder = new ScanFilter.Builder();
-        builder.setManufacturerData(AIRPODS_MANUFACTURER, manufacturerData, manufacturerDataMask);
-
-        return Collections.singletonList(builder.build());
+        return Arrays.asList(
+                new ScanFilter.Builder().setManufacturerData(AIRPODS_MANUFACTURER, longData, longMask).build(),
+                new ScanFilter.Builder().setManufacturerData(AIRPODS_MANUFACTURER, shortData, shortMask).build());
     }
 
     @Override
@@ -86,6 +82,7 @@ public abstract class PodsStatusScanCallback extends ScanCallback {
     private ScanResult getBestResult(ScanResult result) {
         mRecentBeacons.add(result);
         ScanResult strongestBeacon = null;
+        ScanResult strongestShortBeacon = null;
 
         for (int i = 0; i < mRecentBeacons.size(); i++) {
             if (SystemClock.elapsedRealtimeNanos() - mRecentBeacons.get(i).getTimestampNanos() > RECENT_BEACONS_MAX_T_NS) {
@@ -96,6 +93,14 @@ public abstract class PodsStatusScanCallback extends ScanCallback {
             if (strongestBeacon == null || strongestBeacon.getRssi() < mRecentBeacons.get(i).getRssi()) {
                 strongestBeacon = mRecentBeacons.get(i);
             }
+            if (isShortFormat(mRecentBeacons.get(i)) && (strongestShortBeacon == null || strongestShortBeacon.getRssi() < mRecentBeacons.get(i).getRssi())) {
+                strongestShortBeacon = mRecentBeacons.get(i);
+            }
+        }
+
+        // Prefer the replica's short advertisement because it carries the accurate case battery.
+        if (strongestShortBeacon != null) {
+            return strongestShortBeacon;
         }
 
         if (strongestBeacon != null && Objects.equals(strongestBeacon.getDevice().getAddress(), result.getDevice().getAddress())) {
@@ -112,7 +117,14 @@ public abstract class PodsStatusScanCallback extends ScanCallback {
     }
 
     private static boolean isDataValid(byte[] data) {
-        return data != null && data.length == AIRPODS_DATA_LENGTH;
+        return data != null && (data.length == AIRPODS_DATA_LENGTH
+                || (data.length == SHORT_AIRPODS_DATA_LENGTH && data[0] == 7 && data[1] == 15 && data[2] == 0));
+    }
+
+    private static boolean isShortFormat(ScanResult result) {
+        if (result == null || result.getScanRecord() == null) return false;
+        byte[] data = result.getScanRecord().getManufacturerSpecificData(AIRPODS_MANUFACTURER);
+        return data != null && data.length == SHORT_AIRPODS_DATA_LENGTH && data[0] == 7 && data[1] == 15 && data[2] == 0;
     }
 
     private static String decodeResult(ScanResult result) {
